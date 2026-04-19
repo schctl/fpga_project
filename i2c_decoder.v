@@ -1,35 +1,24 @@
-// =============================================================================
-// Module  : i2c_decoder
-// Purpose : Decodes I2C bus (SCL + SDA) internally
-// =============================================================================
-
-module i2c_decoder (
-    input  wire       clk,          // System clock (used for edge detection)
-    input  wire       rst_n,        // Active-low synchronous reset
-    input  wire       scl,          // I2C clock line
-    input  wire       sda           // I2C data  line
+module i2c_decoder(
+    input wire clk,
+    input wire rst,
+    input wire scl,
+    input wire sda
 );
 
-    // -----------------------------------------------------------------------
-    // Internal decoded signals (removed from top-level ports)
-    // -----------------------------------------------------------------------
-    reg  [6:0] addr;         // 7-bit slave address
-    reg        rw;           // 1 = Read, 0 = Write
-    reg  [7:0] data_byte;    // Latest captured data byte
-    reg        addr_valid;   // Pulsed 1 cycle when address + R/W ready
-    reg        data_valid;   // Pulsed 1 cycle when data byte ready
-    reg        ack;          // ACK bit captured after each byte
-    reg        busy;         // HIGH while a transaction is in progress
-    reg        error;        // HIGH if unexpected condition detected
+    reg  [6:0] addr;
+    reg        rw;
+    reg  [7:0] data_byte;
+    reg        addr_valid;
+    reg        data_valid;
+    reg        ack;
+    reg        busy;
+    reg        error;
 
-    // -----------------------------------------------------------------------
-    // Synchronise SCL/SDA into the system clock domain (2-FF synchroniser)
-    // -----------------------------------------------------------------------
     reg scl_r1, scl_r2, scl_r3;
     reg sda_r1, sda_r2, sda_r3;
 
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always @(posedge clk) begin
+        if (rst) begin
             scl_r1 <= 1'b1; scl_r2 <= 1'b1; scl_r3 <= 1'b1;
             sda_r1 <= 1'b1; sda_r2 <= 1'b1; sda_r3 <= 1'b1;
         end else begin
@@ -38,44 +27,30 @@ module i2c_decoder (
         end
     end
 
-    // Stable (debounced) versions
     wire scl_stable = scl_r2;
     wire sda_stable = sda_r2;
 
-    // Edge detection on stable signals
     wire scl_rising  = ( scl_r2 & ~scl_r3);
-    wire scl_falling = (~scl_r2 &  scl_r3);
     wire sda_rising  = ( sda_r2 & ~sda_r3);
     wire sda_falling = (~sda_r2 &  sda_r3);
 
-    // -----------------------------------------------------------------------
-    // START/STOP detection
-    //   START : SDA falls while SCL is HIGH
-    //   STOP  : SDA rises  while SCL is HIGH
-    // -----------------------------------------------------------------------
     wire start_det = sda_falling & scl_stable;
     wire stop_det  = sda_rising  & scl_stable;
 
-    // -----------------------------------------------------------------------
-    // FSM state encoding
-    // -----------------------------------------------------------------------
     localparam [2:0]
-        S_IDLE      = 3'd0,   // Waiting for START
-        S_ADDR      = 3'd1,   // Receiving 7-bit address
-        S_RW        = 3'd2,   // Receiving R/W bit
-        S_ACK_ADDR  = 3'd3,   // ACK after address byte
-        S_DATA      = 3'd4,   // Receiving 8-bit data
-        S_ACK_DATA  = 3'd5;   // ACK after data byte
+        S_IDLE      = 3'd0,
+        S_ADDR      = 3'd1,
+        S_RW        = 3'd2,
+        S_ACK_ADDR  = 3'd3,
+        S_DATA      = 3'd4,
+        S_ACK_DATA  = 3'd5;
 
     reg [2:0] state;
-    reg [3:0] bit_cnt;        // Counts bits within a phase (0-7)
-    reg [7:0] shift_reg;      // Shift register for incoming bits
+    reg [3:0] bit_cnt;
+    reg [7:0] shift_reg;
 
-    // -----------------------------------------------------------------------
-    // FSM
-    // -----------------------------------------------------------------------
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+    always @(posedge clk) begin
+        if (rst) begin
             state      <= S_IDLE;
             bit_cnt    <= 4'd0;
             shift_reg  <= 8'd0;
@@ -88,86 +63,65 @@ module i2c_decoder (
             busy       <= 1'b0;
             error      <= 1'b0;
         end else begin
-            // Default pulse clears
             addr_valid <= 1'b0;
             data_valid <= 1'b0;
             error      <= 1'b0;
 
-            // STOP always returns to IDLE regardless of current state
             if (stop_det) begin
                 state <= S_IDLE;
                 busy  <= 1'b0;
-            end
-            // Repeated START: restart from address phase
-            else if (start_det) begin
+            end else if (start_det) begin
                 state     <= S_ADDR;
                 bit_cnt   <= 4'd0;
                 shift_reg <= 8'd0;
                 busy      <= 1'b1;
-            end
-            else begin
+            end else begin
                 case (state)
-                    S_IDLE: begin
-                        busy <= 1'b0;
+                    S_IDLE: busy <= 1'b0;
+
+                    S_ADDR: if (scl_rising) begin
+                        shift_reg <= {shift_reg[6:0], sda_stable};
+                        if (bit_cnt == 4'd6) begin
+                            addr    <= {shift_reg[5:0], sda_stable};
+                            bit_cnt <= 4'd0;
+                            state   <= S_RW;
+                        end else bit_cnt <= bit_cnt + 1'b1;
                     end
 
-                    S_ADDR: begin
-                        if (scl_rising) begin
-                            shift_reg <= {shift_reg[6:0], sda_stable};
-                            if (bit_cnt == 4'd6) begin
-                                addr    <= {shift_reg[5:0], sda_stable};
-                                bit_cnt <= 4'd0;
-                                state   <= S_RW;
-                            end else begin
-                                bit_cnt <= bit_cnt + 1'b1;
-                            end
-                        end
+                    S_RW: if (scl_rising) begin
+                        rw         <= sda_stable;
+                        addr_valid <= 1'b1;
+                        bit_cnt    <= 4'd0;
+                        state      <= S_ACK_ADDR;
                     end
 
-                    S_RW: begin
-                        if (scl_rising) begin
-                            rw         <= sda_stable;
-                            addr_valid <= 1'b1;
-                            bit_cnt    <= 4'd0;
-                            state      <= S_ACK_ADDR;
-                        end
-                    end
-
-                    S_ACK_ADDR: begin
-                        if (scl_rising) begin
-                            ack   <= ~sda_stable;
-                            if (sda_stable == 1'b0) begin
-                                shift_reg <= 8'd0;
-                                bit_cnt   <= 4'd0;
-                                state     <= S_DATA;
-                            end else begin
-                                error <= 1'b1;
-                                state <= S_IDLE;
-                            end
-                        end
-                    end
-
-                    S_DATA: begin
-                        if (scl_rising) begin
-                            shift_reg <= {shift_reg[6:0], sda_stable};
-                            if (bit_cnt == 4'd7) begin
-                                data_byte  <= {shift_reg[6:0], sda_stable};
-                                data_valid <= 1'b1;
-                                bit_cnt    <= 4'd0;
-                                state      <= S_ACK_DATA;
-                            end else begin
-                                bit_cnt <= bit_cnt + 1'b1;
-                            end
-                        end
-                    end
-
-                    S_ACK_DATA: begin
-                        if (scl_rising) begin
-                            ack <= ~sda_stable;
+                    S_ACK_ADDR: if (scl_rising) begin
+                        ack <= ~sda_stable;
+                        if (!sda_stable) begin
                             shift_reg <= 8'd0;
                             bit_cnt   <= 4'd0;
                             state     <= S_DATA;
+                        end else begin
+                            error <= 1'b1;
+                            state <= S_IDLE;
                         end
+                    end
+
+                    S_DATA: if (scl_rising) begin
+                        shift_reg <= {shift_reg[6:0], sda_stable};
+                        if (bit_cnt == 4'd7) begin
+                            data_byte  <= {shift_reg[6:0], sda_stable};
+                            data_valid <= 1'b1;
+                            bit_cnt    <= 4'd0;
+                            state      <= S_ACK_DATA;
+                        end else bit_cnt <= bit_cnt + 1'b1;
+                    end
+
+                    S_ACK_DATA: if (scl_rising) begin
+                        ack      <= ~sda_stable;
+                        shift_reg <= 8'd0;
+                        bit_cnt   <= 4'd0;
+                        state     <= S_DATA;
                     end
 
                     default: state <= S_IDLE;
