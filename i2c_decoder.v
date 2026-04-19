@@ -1,35 +1,26 @@
 // =============================================================================
 // Module  : i2c_decoder
-// Purpose : Decodes I2C bus (SCL + SDA) and extracts:
-//             - 7-bit slave address
-//             - R/W bit
-//             - 8-bit data byte(s)
-//             - ACK/NACK from slave
-//             - Valid pulse when a complete address/data byte is captured
-//
-// I2C Protocol Overview:
-//   START  : SDA falls while SCL is HIGH
-//   STOP   : SDA rises  while SCL is HIGH
-//   DATA   : Sampled on rising edge of SCL (MSB first)
-//   ACK    : Pulled LOW by the receiver on the 9th clock after 8 data bits
+// Purpose : Decodes I2C bus (SCL + SDA) internally
 // =============================================================================
 
 module i2c_decoder (
     input  wire       clk,          // System clock (used for edge detection)
     input  wire       rst_n,        // Active-low synchronous reset
     input  wire       scl,          // I2C clock line
-    input  wire       sda,          // I2C data  line
-
-    // ---- Decoded outputs ----
-    output reg  [6:0] addr,         // 7-bit slave address
-    output reg        rw,           // 1 = Read, 0 = Write
-    output reg  [7:0] data_byte,    // Latest captured data byte
-    output reg        addr_valid,   // Pulsed 1 cycle when address + R/W ready
-    output reg        data_valid,   // Pulsed 1 cycle when data byte ready
-    output reg        ack,          // ACK bit captured after each byte
-    output reg        busy,         // HIGH while a transaction is in progress
-    output reg        error         // HIGH if unexpected condition detected
+    input  wire       sda           // I2C data  line
 );
+
+    // -----------------------------------------------------------------------
+    // Internal decoded signals (removed from top-level ports)
+    // -----------------------------------------------------------------------
+    reg  [6:0] addr;         // 7-bit slave address
+    reg        rw;           // 1 = Read, 0 = Write
+    reg  [7:0] data_byte;    // Latest captured data byte
+    reg        addr_valid;   // Pulsed 1 cycle when address + R/W ready
+    reg        data_valid;   // Pulsed 1 cycle when data byte ready
+    reg        ack;          // ACK bit captured after each byte
+    reg        busy;         // HIGH while a transaction is in progress
+    reg        error;        // HIGH if unexpected condition detected
 
     // -----------------------------------------------------------------------
     // Synchronise SCL/SDA into the system clock domain (2-FF synchroniser)
@@ -116,15 +107,10 @@ module i2c_decoder (
             end
             else begin
                 case (state)
-                    // ------------------------------------------
                     S_IDLE: begin
                         busy <= 1'b0;
-                        // Stays here until start_det handled above
                     end
 
-                    // ------------------------------------------
-                    // Sample bits on SCL rising edge
-                    // ------------------------------------------
                     S_ADDR: begin
                         if (scl_rising) begin
                             shift_reg <= {shift_reg[6:0], sda_stable};
@@ -138,34 +124,29 @@ module i2c_decoder (
                         end
                     end
 
-                    // ------------------------------------------
                     S_RW: begin
                         if (scl_rising) begin
                             rw         <= sda_stable;
-                            addr_valid <= 1'b1;       // Address + R/W captured
+                            addr_valid <= 1'b1;
                             bit_cnt    <= 4'd0;
                             state      <= S_ACK_ADDR;
                         end
                     end
 
-                    // ------------------------------------------
                     S_ACK_ADDR: begin
                         if (scl_rising) begin
-                            ack   <= ~sda_stable;     // ACK = SDA LOW
+                            ack   <= ~sda_stable;
                             if (sda_stable == 1'b0) begin
-                                // ACK received → move to data phase
                                 shift_reg <= 8'd0;
                                 bit_cnt   <= 4'd0;
                                 state     <= S_DATA;
                             end else begin
-                                // NACK → flag error, wait for STOP/START
                                 error <= 1'b1;
                                 state <= S_IDLE;
                             end
                         end
                     end
 
-                    // ------------------------------------------
                     S_DATA: begin
                         if (scl_rising) begin
                             shift_reg <= {shift_reg[6:0], sda_stable};
@@ -180,12 +161,9 @@ module i2c_decoder (
                         end
                     end
 
-                    // ------------------------------------------
                     S_ACK_DATA: begin
                         if (scl_rising) begin
                             ack <= ~sda_stable;
-                            // Regardless of ACK/NACK continue to next byte
-                            // (Master may NACK the last byte before STOP)
                             shift_reg <= 8'd0;
                             bit_cnt   <= 4'd0;
                             state     <= S_DATA;
