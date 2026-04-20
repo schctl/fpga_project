@@ -1,6 +1,5 @@
 module analyzer_top(
     input  wire       clk,
-    input  wire       rst,            // active-high reset
     input  wire [1:0] sw_mode,        // EDGE switches: 00=CAN, 01=UART passthrough, 10/11=I2C (no UART stream yet)
     input  wire       scl,
     input  wire       sda,
@@ -8,8 +7,11 @@ module analyzer_top(
     input  wire       uart_out_rx,
     output wire       can_tx,
     output wire       uart_laptop_tx,
-    output wire       user_led
+    output wire       user_led,
+    output wire       user_led_2
 );
+
+    wire rst = 0;
 
     // ------------------------------------------------------------------------
     // Internal UART outputs from each path
@@ -68,6 +70,9 @@ module analyzer_top(
     assign can_tx = (sw_mode == 2'b00) ? can_tx_int : 1'b1;
 
     // User LED reflects accepted CAN RX activity from can_top
-    assign user_led = unused_rx_led;
+//    assign user_led = unused_rx_led;
+    assign user_led = i2c_uart_tx;
+    
+    assign user_led_2 = rst;
 
 endmodule
