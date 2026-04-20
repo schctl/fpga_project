@@ -7,13 +7,15 @@ module analyzer_top(
     input  wire       can_rx,
     input  wire       uart_out_rx,
     output wire       can_tx,
-    output wire       uart_laptop_tx
+    output wire       uart_laptop_tx,
+    output wire       user_led
 );
 
     // ------------------------------------------------------------------------
     // Internal UART outputs from each path
     // ------------------------------------------------------------------------
     wire can_uart_tx;
+    wire i2c_uart_tx;
     wire uart_passthrough_tx;
     wire can_tx_int;
     wire unused_rx_led;
@@ -31,13 +33,14 @@ module analyzer_top(
     );
 
     // ------------------------------------------------------------------------
-    // I2C decoder path (currently decode-only, no UART output port)
+    // I2C decoder path
     // ------------------------------------------------------------------------
     i2c_decoder u_i2c_decoder (
         .clk           (clk),
         .rst           (rst),
         .scl           (scl),
-        .sda           (sda)
+        .sda           (sda),
+        .uart_rx       (i2c_uart_tx)
     );
 
     // ------------------------------------------------------------------------
@@ -54,14 +57,17 @@ module analyzer_top(
     // Mode mux
     // 00: CAN decoder UART stream
     // 01: UART passthrough
-    // 10/11: I2C selected (UART idle high for now)
+    // 10/11: I2C decoder UART stream
     // ------------------------------------------------------------------------
     assign uart_laptop_tx =
         (sw_mode == 2'b00) ? can_uart_tx :
         (sw_mode == 2'b01) ? uart_passthrough_tx :
-                             1'b1;   // UART idle high
+                             i2c_uart_tx;
 
     // CAN TX only driven out when CAN mode selected, else recessive '1'
     assign can_tx = (sw_mode == 2'b00) ? can_tx_int : 1'b1;
+
+    // User LED reflects accepted CAN RX activity from can_top
+    assign user_led = unused_rx_led;
 
 endmodule
